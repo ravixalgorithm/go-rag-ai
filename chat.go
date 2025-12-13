@@ -159,6 +159,71 @@ func GetTimeString() string {
 	return time.Now().Format("15:04:05")
 }
 
+// StreamResponseWithCodeHighlight streams response with simple code highlighting
+func StreamResponseWithCodeHighlight(text string) {
+	white := color.New(color.FgWhite)
+	codeBlockColor := color.New(color.FgBlue)
+	inlineCodeColor := color.New(color.FgYellow)
+
+	inCodeBlock := false
+	inInlineCode := false
+	i := 0
+
+	for i < len(text) {
+		// Check for code block start/end (```)
+		if i+2 < len(text) && text[i:i+3] == "```" {
+			if !inCodeBlock {
+				// Starting code block
+				codeBlockColor.Print("```")
+				time.Sleep(5 * time.Millisecond)
+				inCodeBlock = true
+				i += 3
+
+				// Print language identifier if present (until newline)
+				for i < len(text) && text[i] != '\n' {
+					codeBlockColor.Print(string(text[i]))
+					time.Sleep(5 * time.Millisecond)
+					i++
+				}
+				if i < len(text) && text[i] == '\n' {
+					fmt.Println()
+					i++
+				}
+			} else {
+				// Ending code block
+				codeBlockColor.Print("```")
+				time.Sleep(5 * time.Millisecond)
+				inCodeBlock = false
+				i += 3
+			}
+			continue
+		}
+
+		// Check for inline code (`)
+		if text[i] == '`' && !inCodeBlock {
+			inlineCodeColor.Print("`")
+			time.Sleep(5 * time.Millisecond)
+			inInlineCode = !inInlineCode
+			i++
+			continue
+		}
+
+		// Print character with appropriate color
+		char := string(text[i])
+		if inCodeBlock {
+			codeBlockColor.Print(char)
+		} else if inInlineCode {
+			inlineCodeColor.Print(char)
+		} else {
+			white.Print(char)
+		}
+
+		time.Sleep(5 * time.Millisecond)
+		i++
+	}
+	fmt.Println()
+}
+
 // RunInteractive starts an interactive chat session
 func (cb *ChatBot) RunInteractive(ctx context.Context) error {
 	// Color definitions
@@ -167,7 +232,6 @@ func (cb *ChatBot) RunInteractive(ctx context.Context) error {
 	yellow := color.New(color.FgYellow)
 	red := color.New(color.FgRed)
 	magenta := color.New(color.FgMagenta, color.Bold)
-	white := color.New(color.FgWhite)
 
 	// Print welcome message
 	cyan.Println("╔════════════════════════╗")
@@ -176,19 +240,32 @@ func (cb *ChatBot) RunInteractive(ctx context.Context) error {
 	yellow.Println("\n💬 I'll remember our conversation! Type your questions.")
 	yellow.Println("Commands: 'clear' to clear screen, 'history' to view conversation, 'exit' to quit\n")
 
+	// Channel for user input
+	inputChan := make(chan string)
 	scanner := bufio.NewScanner(os.Stdin)
 
-	for {
-		// Print prompt with timestamp
-		timeStr := GetTimeString()
-		green.Printf("You (%s): ", timeStr)
+	// Flag to indicate if streaming is in progress
+	streaming := false
 
-		// Read user input
-		if !scanner.Scan() {
-			break
+	for {
+		// Print prompt with timestamp only if not streaming
+		if !streaming {
+			timeStr := GetTimeString()
+			green.Printf("You (%s): ", timeStr)
 		}
 
-		input := strings.TrimSpace(scanner.Text())
+		// Start goroutine to read input
+		go func() {
+			if scanner.Scan() {
+				inputChan <- scanner.Text()
+			} else {
+				inputChan <- ""
+			}
+		}()
+
+		// Wait for input (this blocks until user presses enter)
+		input := <-inputChan
+		input = strings.TrimSpace(input)
 
 		// Handle empty input
 		if input == "" {
@@ -219,26 +296,45 @@ func (cb *ChatBot) RunInteractive(ctx context.Context) error {
 		if strings.ToLower(input) == "clear" {
 			// Clear screen
 			fmt.Print("\033[H\033[2J")
-			cyan.Println("\n╔════════════════════════════════════════════╗")
-			cyan.Println("║   RAG Chatbot with Conversation Memory    ║")
-			cyan.Println("╚════════════════════════════════════════════╝")
+			cyan.Println("\n╔════════════════════════╗")
+			cyan.Println("║   RAG Chatbot In Go    ║")
+			cyan.Println("╚════════════════════════╝")
 			yellow.Printf("\n✨ Screen cleared! Conversation history: %d messages\n\n", len(cb.conversationHistory))
 			continue
 		}
+
+		// Set streaming flag
+		streaming = true
+
+		// Show "Bot is thinking..." indicator
+		fmt.Println()
+		gray := color.New(color.FgHiBlack)
+		gray.Print("Bot is thinking")
+		for i := 0; i < 3; i++ {
+			time.Sleep(200 * time.Millisecond)
+			gray.Print(".")
+		}
+		fmt.Print("\r\033[K") // Clear the "thinking" line
 
 		// Process question
 		answer, err := cb.Query(ctx, input)
 		if err != nil {
 			red.Printf("\n❌ Error: %v\n\n", err)
+			streaming = false
 			continue
 		}
 
-		// Print answer with timestamp and streaming effect
-		fmt.Println()
+		// Print answer with timestamp and streaming
 		botTimeStr := GetTimeString()
 		magenta.Printf("Bot (%s): ", botTimeStr)
-		StreamText(answer, white)
+
+		// Stream response with simple code highlighting
+		StreamResponseWithCodeHighlight(answer)
+
 		fmt.Println()
+
+		// Clear streaming flag - user can now type
+		streaming = false
 	}
 
 	if err := scanner.Err(); err != nil {
