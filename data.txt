@@ -1,0 +1,21 @@
+Go is a statically typed, compiled programming language designed at Google.
+It is syntactically similar to C, but with memory safety, garbage collection, and structural typing.
+Go was designed to address criticisms of other languages while maintaining their positive characteristics.
+
+Key features of Go include:
+- Fast compilation times
+- Built-in concurrency support with goroutines and channels
+- Simple and clean syntax
+- Strong standard library
+- Cross-platform support
+
+Go is widely used for:
+- Web servers and APIs
+- Cloud services and infrastructure
+- Command-line tools
+- Distributed systems
+- Microservices
+
+The Go mascot is the Gopher, designed by Renée French.
+Go was announced in November 2009 and became open source in 2012.
+Major companies using Go include Google, Uber, Docker, and Kubernetes.
