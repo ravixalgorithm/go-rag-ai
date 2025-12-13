@@ -10,23 +10,29 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/fatih/color"
 )
 
-// ChatBot handles RAG-based chat interactions
+// ConversationMessage stores a single message in the conversation
+type ConversationMessage struct {
+	Role      string
+	Content   string
+	Timestamp time.Time
+}
+
+// ChatBot handles RAG-based chat interactions with conversation memory
 type ChatBot struct {
-	vectorStore *VectorStore
-	embedder    *Embedder
-	config      *Config
+	config              *Config
+	conversationHistory []ConversationMessage
 }
 
 // NewChatBot creates a new ChatBot instance
-func NewChatBot(vectorStore *VectorStore, embedder *Embedder, config *Config) *ChatBot {
+func NewChatBot(config *Config) *ChatBot {
 	return &ChatBot{
-		vectorStore: vectorStore,
-		embedder:    embedder,
-		config:      config,
+		config:              config,
+		conversationHistory: make([]ConversationMessage, 0),
 	}
 }
 
@@ -53,41 +59,42 @@ type GroqChatResponse struct {
 	} `json:"choices"`
 }
 
-// Query performs a RAG query
+// AddToHistory adds a message to the conversation history
+func (cb *ChatBot) AddToHistory(role, content string) {
+	cb.conversationHistory = append(cb.conversationHistory, ConversationMessage{
+		Role:      role,
+		Content:   content,
+		Timestamp: time.Now(),
+	})
+}
+
+// Query performs a RAG query with conversation context
 func (cb *ChatBot) Query(ctx context.Context, question string) (string, error) {
-	// 1. Get embedding for the question
-	queryEmbedding, err := cb.embedder.GetEmbedding(ctx, question)
-	if err != nil {
-		return "", fmt.Errorf("failed to get query embedding: %w", err)
+	// Add user message to history
+	cb.AddToHistory("user", question)
+
+	// Build messages for Groq API including conversation history
+	messages := []GroqMessage{
+		{Role: "system", Content: cb.config.SystemPrompt},
 	}
 
-	// 2. Search for relevant documents
-	results, err := cb.vectorStore.Search(ctx, queryEmbedding, 3)
-	if err != nil {
-		return "", fmt.Errorf("failed to search documents: %w", err)
+	// Add conversation history (keep last 10 exchanges to avoid token limits)
+	historyStart := 0
+	if len(cb.conversationHistory) > 20 {
+		historyStart = len(cb.conversationHistory) - 20
 	}
 
-	// 3. Build context from results
-	context_text := ""
-	if len(results) > 0 {
-		context_text = "Context:\n"
-		for i, result := range results {
-			context_text += fmt.Sprintf("\n[Document %d - Similarity: %.2f]\n%s\n",
-				i+1, result.Similarity, result.Content)
-		}
+	for _, msg := range cb.conversationHistory[historyStart:] {
+		messages = append(messages, GroqMessage{
+			Role:    msg.Role,
+			Content: msg.Content,
+		})
 	}
 
-	// 4. Create prompt with context
-	prompt := fmt.Sprintf("%s\n\nQuestion: %s\n\nAnswer based on the context above:",
-		context_text, question)
-
-	// 5. Call Groq API for completion
+	// Call Groq API
 	reqBody := GroqChatRequest{
-		Model: cb.config.ChatModel,
-		Messages: []GroqMessage{
-			{Role: "system", Content: cb.config.SystemPrompt},
-			{Role: "user", Content: prompt},
-		},
+		Model:       cb.config.ChatModel,
+		Messages:    messages,
 		Temperature: 0.7,
 		MaxTokens:   1024,
 	}
@@ -130,7 +137,26 @@ func (cb *ChatBot) Query(ctx context.Context, question string) (string, error) {
 		return "", fmt.Errorf("no response from model")
 	}
 
-	return groqResp.Choices[0].Message.Content, nil
+	answer := groqResp.Choices[0].Message.Content
+
+	// Add assistant response to history
+	cb.AddToHistory("assistant", answer)
+
+	return answer, nil
+}
+
+// StreamText prints text with a typing effect
+func StreamText(text string, textColor *color.Color) {
+	for _, char := range text {
+		textColor.Print(string(char))
+		time.Sleep(5 * time.Millisecond) // 0.005 seconds per character
+	}
+	fmt.Println()
+}
+
+// GetTimeString returns formatted current time
+func GetTimeString() string {
+	return time.Now().Format("15:04:05")
 }
 
 // RunInteractive starts an interactive chat session
@@ -140,19 +166,22 @@ func (cb *ChatBot) RunInteractive(ctx context.Context) error {
 	green := color.New(color.FgGreen)
 	yellow := color.New(color.FgYellow)
 	red := color.New(color.FgRed)
+	magenta := color.New(color.FgMagenta, color.Bold)
+	white := color.New(color.FgWhite)
 
 	// Print welcome message
-	cyan.Println("\n╔════════════════════════════════════════╗")
-	cyan.Println("║   RAG Chatbot with Groq & pgvector    ║")
-	cyan.Println("╚════════════════════════════════════════╝")
-	yellow.Println("\nType your questions, or 'exit' to quit.")
-	yellow.Println("Commands: 'clear' to clear chat, 'stats' for database info\n")
+	cyan.Println("╔════════════════════════╗")
+	cyan.Println("║   RAG Chatbot In Go    ║")
+	cyan.Println("╚════════════════════════╝")
+	yellow.Println("\n💬 I'll remember our conversation! Type your questions.")
+	yellow.Println("Commands: 'clear' to clear screen, 'history' to view conversation, 'exit' to quit\n")
 
 	scanner := bufio.NewScanner(os.Stdin)
 
 	for {
-		// Print prompt
-		green.Print("You: ")
+		// Print prompt with timestamp
+		timeStr := GetTimeString()
+		green.Printf("You (%s): ", timeStr)
 
 		// Read user input
 		if !scanner.Scan() {
@@ -168,41 +197,47 @@ func (cb *ChatBot) RunInteractive(ctx context.Context) error {
 
 		// Handle exit command
 		if strings.ToLower(input) == "exit" || strings.ToLower(input) == "quit" {
-			cyan.Println("\nGoodbye! 👋")
+			cyan.Println("\n👋 Goodbye! It was nice chatting with you!")
 			break
 		}
 
-		// Handle stats command
-		if strings.ToLower(input) == "stats" {
-			count, err := cb.vectorStore.Count(ctx)
-			if err != nil {
-				red.Printf("Error getting stats: %v\n", err)
-				continue
+		// Handle history command
+		if strings.ToLower(input) == "history" {
+			yellow.Printf("\n📜 Conversation History (%d messages):\n\n", len(cb.conversationHistory))
+			for _, msg := range cb.conversationHistory {
+				if msg.Role == "user" {
+					green.Printf("You (%s): %s\n", msg.Timestamp.Format("15:04:05"), msg.Content)
+				} else {
+					magenta.Printf("Bot (%s): %s\n", msg.Timestamp.Format("15:04:05"), msg.Content)
+				}
 			}
-			yellow.Printf("\n📊 Database contains %d document chunks\n\n", count)
+			fmt.Println()
 			continue
 		}
 
 		// Handle clear command
 		if strings.ToLower(input) == "clear" {
-			// Clear screen (simple approach)
+			// Clear screen
 			fmt.Print("\033[H\033[2J")
-			cyan.Println("\n╔════════════════════════════════════════╗")
-			cyan.Println("║   RAG Chatbot with Groq & pgvector    ║")
-			cyan.Println("╚════════════════════════════════════════╝\n")
+			cyan.Println("\n╔════════════════════════════════════════════╗")
+			cyan.Println("║   RAG Chatbot with Conversation Memory    ║")
+			cyan.Println("╚════════════════════════════════════════════╝")
+			yellow.Printf("\n✨ Screen cleared! Conversation history: %d messages\n\n", len(cb.conversationHistory))
 			continue
 		}
 
 		// Process question
-		cyan.Print("\nBot: ")
 		answer, err := cb.Query(ctx, input)
 		if err != nil {
-			red.Printf("Error: %v\n\n", err)
+			red.Printf("\n❌ Error: %v\n\n", err)
 			continue
 		}
 
-		// Print answer
-		fmt.Println(answer)
+		// Print answer with timestamp and streaming effect
+		fmt.Println()
+		botTimeStr := GetTimeString()
+		magenta.Printf("Bot (%s): ", botTimeStr)
+		StreamText(answer, white)
 		fmt.Println()
 	}
 
