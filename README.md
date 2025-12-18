@@ -2,6 +2,8 @@
 
 A terminal-based RAG (Retrieval-Augmented Generation) chatbot built in Go with **multi-provider LLM support**. Switch between providers on the fly without restarting!
 
+![Go RAG AI Demo](example/chat.png)
+
 ## ✨ Features
 
 - 🔄 **Multi-LLM Support** – Groq, OpenAI, Anthropic, Gemini, OpenRouter

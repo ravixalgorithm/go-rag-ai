@@ -185,21 +185,53 @@ func (cb *ChatBot) RunInteractive(ctx context.Context) error {
 	yellow := color.New(color.FgYellow)
 	red := color.New(color.FgRed)
 	magenta := color.New(color.FgMagenta, color.Bold)
+	// Bright tangy orange using RGB ANSI escape codes
+	orangeStart := "\033[38;2;255;140;0m\033[1m" // RGB(255,140,0) + bold
+	orangeEnd := "\033[0m"
+	printOrange := func(text string) { fmt.Print(orangeStart + text + orangeEnd) }
+	printOrangeLn := func(text string) { fmt.Println(orangeStart + text + orangeEnd) }
+	white := color.New(color.FgWhite)
+	gray := color.New(color.FgHiBlack)
+	boldCyan := color.New(color.FgHiCyan, color.Bold)
 
-	// Print welcome message
-	cyan.Println("╔════════════════════════╗")
-	cyan.Println("║   RAG Chatbot In Go    ║")
-	cyan.Println("╚════════════════════════╝")
-	yellow.Println("\n💬 I'll remember our conversation! Type your questions.")
-	fmt.Print("Commands: ")
-	magenta.Print("/clear")
-	fmt.Print(", ")
-	magenta.Print("/history")
-	fmt.Print(", ")
-	magenta.Print("/exit")
-	fmt.Print(", ")
-	magenta.Print("/model <provider> [model]")
-	fmt.Println("\n")
+	// Print modern welcome header
+	fmt.Println()
+	boldCyan.Println("  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓")
+	boldCyan.Print("  ┃  ")
+	white.Print("🤖 ")
+	cyan.Print("Go RAG AI")
+	gray.Print("  •  Multi-LLM Terminal Chatbot")
+	boldCyan.Println("            ┃")
+	boldCyan.Println("  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛")
+	fmt.Println()
+
+	// Provider info
+	gray.Print("  Provider: ")
+	cyan.Printf("%s", cb.config.Provider)
+	gray.Print("  •  Model: ")
+	cyan.Println(cb.config.ChatModel)
+	fmt.Println()
+
+	// Commands section
+	gray.Println("  Commands")
+	fmt.Print("    ")
+	printOrange("/model <provider>")
+	gray.Println("  Switch LLM (groq, openai, anthropic, gemini, openrouter)")
+	fmt.Print("    ")
+	printOrange("/history")
+	gray.Print("          View conversation  ")
+	fmt.Print("  ")
+	printOrange("/clear")
+	gray.Println("  Clear screen")
+	fmt.Print("    ")
+	printOrange("/exit")
+	gray.Print("             Exit chatbot    ")
+	fmt.Print("  ")
+	gray.Println("Ctrl+C  Quick exit")
+	fmt.Println()
+
+	gray.Println("  ─────────────────────────────────────────────────────────────")
+	fmt.Println()
 
 	// Channel for user input
 	inputChan := make(chan string)
@@ -208,11 +240,13 @@ func (cb *ChatBot) RunInteractive(ctx context.Context) error {
 	// Handle Ctrl+C gracefully
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt)
+
+	// Start single input reader goroutine
 	go func() {
-		<-sigChan
-		fmt.Println() // Move to new line after ^C
-		cyan.Println("\n👋 Goodbye! (Ctrl+C)")
-		os.Exit(0)
+		for scanner.Scan() {
+			inputChan <- scanner.Text()
+		}
+		close(inputChan)
 	}()
 
 	// Flag to indicate if streaming is in progress
@@ -225,22 +259,32 @@ func (cb *ChatBot) RunInteractive(ctx context.Context) error {
 			green.Printf("You (%s): ", timeStr)
 		}
 
-		// Start goroutine to read input
-		go func() {
-			if scanner.Scan() {
-				inputChan <- scanner.Text()
-			} else {
-				inputChan <- ""
+		// Wait for input or Ctrl+C
+		var input string
+		select {
+		case <-sigChan:
+			fmt.Print("\033[2K\r") // Clear current line
+			cyan.Println("\n👋 Goodbye! (Ctrl+C)")
+			return nil
+		case text, ok := <-inputChan:
+			if !ok {
+				return nil // Channel closed
 			}
-		}()
-
-		// Wait for input (this blocks until user presses enter)
-		input := <-inputChan
-		input = strings.TrimSpace(input)
+			input = strings.TrimSpace(text)
+		}
 
 		// Handle empty input
 		if input == "" {
 			continue
+		}
+
+		// Echo slash commands in orange for visibility
+		if strings.HasPrefix(input, "/") {
+			// Move cursor up and reprint the line with orange command
+			fmt.Print("\033[1A\033[K") // Move up and clear line
+			timeStr := GetTimeString()
+			green.Printf("You (%s): ", timeStr)
+			printOrangeLn(input)
 		}
 
 		// Handle /exit command
@@ -252,24 +296,26 @@ func (cb *ChatBot) RunInteractive(ctx context.Context) error {
 		// Handle /history command
 		if strings.ToLower(input) == "/history" {
 			fmt.Println()
-			cyan.Println("╔══════════════════════════════════════════════════════════════╗")
-			cyan.Printf("║  📜 Conversation History (%d messages)%s║\n", len(cb.conversationHistory), strings.Repeat(" ", 39-len(fmt.Sprintf("%d", len(cb.conversationHistory)))))
-			cyan.Println("╠══════════════════════════════════════════════════════════════╣")
+			cyan.Println("  ═══════════════════════════════════════════════════════════")
+			cyan.Printf("    📜 Conversation History (%d messages)\n", len(cb.conversationHistory))
+			cyan.Println("  ═══════════════════════════════════════════════════════════")
 			if len(cb.conversationHistory) == 0 {
-				cyan.Println("║  No messages yet.                                            ║")
+				gray.Println("    No messages yet.")
 			}
 			for _, msg := range cb.conversationHistory {
 				if msg.Role == "user" {
-					fmt.Print("║  ")
+					fmt.Print("    ")
 					green.Printf("You (%s): ", msg.Timestamp.Format("15:04:05"))
-					fmt.Printf("%s\n", msg.Content)
+					fmt.Println(msg.Content)
 				} else {
-					fmt.Print("║  ")
+					fmt.Print("    ")
 					magenta.Printf("%s (%s): ", cb.config.Provider, msg.Timestamp.Format("15:04:05"))
-					fmt.Printf("%s\n", msg.Content)
+					fmt.Println(msg.Content)
+					fmt.Println()
 				}
+				
 			}
-			cyan.Println("╚══════════════════════════════════════════════════════════════╝")
+			cyan.Println("  ═══════════════════════════════════════════════════════════")
 			fmt.Println()
 			continue
 		}
