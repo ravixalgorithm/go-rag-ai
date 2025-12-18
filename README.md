@@ -1,6 +1,6 @@
 # RAG Chatbot with Groq
 
-A simple terminal-based RAG (Retrieval-Augmented Generation) chatbot built in Go using the Groq API for LLM inference. Documents are loaded from local text files and kept in memory for retrieval (no external database required).
+A simple terminal-based RAG (Retrieval-Augmented Generation) chatbot built in Go using the Groq API for LLM inference.
 
 ## Features
 
