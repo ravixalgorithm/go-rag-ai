@@ -2,15 +2,14 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
+
+	"go-groq/internal/llm"
 
 	"github.com/fatih/color"
 )
@@ -26,37 +25,33 @@ type ConversationMessage struct {
 type ChatBot struct {
 	config              *Config
 	conversationHistory []ConversationMessage
+	llmClient           llm.LLMClient
 }
 
 // NewChatBot creates a new ChatBot instance
 func NewChatBot(config *Config) *ChatBot {
+	client, err := llm.NewClient(config.Provider, config.APIKey, config.ChatModel)
+	if err != nil {
+		panic(fmt.Sprintf("failed to create LLM client: %v", err))
+	}
 	return &ChatBot{
 		config:              config,
 		conversationHistory: make([]ConversationMessage, 0),
+		llmClient:           client,
 	}
 }
 
-// GroqChatRequest represents a request to Groq API
-type GroqChatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []GroqMessage `json:"messages"`
-	Temperature float64       `json:"temperature"`
-	MaxTokens   int           `json:"max_tokens"`
-}
-
-// GroqMessage represents a message in Groq API
-type GroqMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-// GroqChatResponse represents a response from Groq API
-type GroqChatResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
+// SwitchModel switches to a different provider and/or model at runtime.
+// provider can be "groq" or "openai"; model is the model name (e.g. "gpt-4o").
+func (cb *ChatBot) SwitchModel(provider, model, apiKey string) error {
+	client, err := llm.NewClient(provider, apiKey, model)
+	if err != nil {
+		return err
+	}
+	cb.llmClient = client
+	cb.config.Provider = provider
+	cb.config.ChatModel = model
+	return nil
 }
 
 // AddToHistory adds a message to the conversation history
@@ -73,71 +68,29 @@ func (cb *ChatBot) Query(ctx context.Context, question string) (string, error) {
 	// Add user message to history
 	cb.AddToHistory("user", question)
 
-	// Build messages for Groq API including conversation history
-	messages := []GroqMessage{
+	// Build messages for LLM including conversation history
+	messages := []llm.Message{
 		{Role: "system", Content: cb.config.SystemPrompt},
 	}
 
-	// Add conversation history (keep last 10 exchanges to avoid token limits)
+	// Add conversation history (keep last 20 messages to avoid token limits)
 	historyStart := 0
 	if len(cb.conversationHistory) > 20 {
 		historyStart = len(cb.conversationHistory) - 20
 	}
 
 	for _, msg := range cb.conversationHistory[historyStart:] {
-		messages = append(messages, GroqMessage{
+		messages = append(messages, llm.Message{
 			Role:    msg.Role,
 			Content: msg.Content,
 		})
 	}
 
-	// Call Groq API
-	reqBody := GroqChatRequest{
-		Model:       cb.config.ChatModel,
-		Messages:    messages,
-		Temperature: 0.7,
-		MaxTokens:   1024,
-	}
-
-	jsonData, err := json.Marshal(reqBody)
+	// Call LLM via the pluggable client
+	answer, err := cb.llmClient.Generate(ctx, messages)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal request: %w", err)
+		return "", err
 	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.groq.com/openai/v1/chat/completions", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+cb.config.GroqAPIKey)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to call Groq API: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("Groq API error (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	var groqResp GroqChatResponse
-	if err := json.Unmarshal(body, &groqResp); err != nil {
-		return "", fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	if len(groqResp.Choices) == 0 {
-		return "", fmt.Errorf("no response from model")
-	}
-
-	answer := groqResp.Choices[0].Message.Content
 
 	// Add assistant response to history
 	cb.AddToHistory("assistant", answer)
@@ -238,11 +191,29 @@ func (cb *ChatBot) RunInteractive(ctx context.Context) error {
 	cyan.Println("║   RAG Chatbot In Go    ║")
 	cyan.Println("╚════════════════════════╝")
 	yellow.Println("\n💬 I'll remember our conversation! Type your questions.")
-	yellow.Println("Commands: 'clear' to clear screen, 'history' to view conversation, 'exit' to quit\n")
+	fmt.Print("Commands: ")
+	magenta.Print("/clear")
+	fmt.Print(", ")
+	magenta.Print("/history")
+	fmt.Print(", ")
+	magenta.Print("/exit")
+	fmt.Print(", ")
+	magenta.Print("/model <provider> [model]")
+	fmt.Println("\n")
 
 	// Channel for user input
 	inputChan := make(chan string)
 	scanner := bufio.NewScanner(os.Stdin)
+
+	// Handle Ctrl+C gracefully
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+	go func() {
+		<-sigChan
+		fmt.Println() // Move to new line after ^C
+		cyan.Println("\n👋 Goodbye! (Ctrl+C)")
+		os.Exit(0)
+	}()
 
 	// Flag to indicate if streaming is in progress
 	streaming := false
@@ -272,28 +243,39 @@ func (cb *ChatBot) RunInteractive(ctx context.Context) error {
 			continue
 		}
 
-		// Handle exit command
-		if strings.ToLower(input) == "exit" || strings.ToLower(input) == "quit" {
+		// Handle /exit command
+		if strings.ToLower(input) == "/exit" || strings.ToLower(input) == "/quit" {
 			cyan.Println("\n👋 Goodbye! It was nice chatting with you!")
 			break
 		}
 
-		// Handle history command
-		if strings.ToLower(input) == "history" {
-			yellow.Printf("\n📜 Conversation History (%d messages):\n\n", len(cb.conversationHistory))
+		// Handle /history command
+		if strings.ToLower(input) == "/history" {
+			fmt.Println()
+			cyan.Println("╔══════════════════════════════════════════════════════════════╗")
+			cyan.Printf("║  📜 Conversation History (%d messages)%s║\n", len(cb.conversationHistory), strings.Repeat(" ", 39-len(fmt.Sprintf("%d", len(cb.conversationHistory)))))
+			cyan.Println("╠══════════════════════════════════════════════════════════════╣")
+			if len(cb.conversationHistory) == 0 {
+				cyan.Println("║  No messages yet.                                            ║")
+			}
 			for _, msg := range cb.conversationHistory {
 				if msg.Role == "user" {
-					green.Printf("You (%s): %s\n", msg.Timestamp.Format("15:04:05"), msg.Content)
+					fmt.Print("║  ")
+					green.Printf("You (%s): ", msg.Timestamp.Format("15:04:05"))
+					fmt.Printf("%s\n", msg.Content)
 				} else {
-					magenta.Printf("Bot (%s): %s\n", msg.Timestamp.Format("15:04:05"), msg.Content)
+					fmt.Print("║  ")
+					magenta.Printf("%s (%s): ", cb.config.Provider, msg.Timestamp.Format("15:04:05"))
+					fmt.Printf("%s\n", msg.Content)
 				}
 			}
+			cyan.Println("╚══════════════════════════════════════════════════════════════╝")
 			fmt.Println()
 			continue
 		}
 
-		// Handle clear command
-		if strings.ToLower(input) == "clear" {
+		// Handle /clear command
+		if strings.ToLower(input) == "/clear" {
 			// Clear screen
 			fmt.Print("\033[H\033[2J")
 			cyan.Println("\n╔════════════════════════╗")
@@ -303,13 +285,72 @@ func (cb *ChatBot) RunInteractive(ctx context.Context) error {
 			continue
 		}
 
+		// Handle /model command: /model <provider> [model]
+		if strings.HasPrefix(strings.ToLower(input), "/model ") || strings.ToLower(input) == "/model" {
+			parts := strings.Fields(input)
+			if len(parts) < 2 {
+				red.Println("Usage: /model <provider> [model]")
+				red.Println("Providers: groq, openai, anthropic, gemini, openrouter")
+				continue
+			}
+			newProvider := strings.ToLower(parts[1])
+
+			// Determine default model if not specified
+			var newModel string
+			if len(parts) >= 3 {
+				newModel = strings.Join(parts[2:], " ") // Allow model names with spaces/slashes
+			} else {
+				switch newProvider {
+				case "groq":
+					newModel = "llama-3.3-70b-versatile"
+				case "openai":
+					newModel = "gpt-4o-mini"
+				case "anthropic":
+					newModel = "claude-3-5-sonnet-20241022"
+				case "gemini":
+					newModel = "gemini-1.5-flash"
+				case "openrouter":
+					newModel = "meta-llama/llama-3.1-8b-instruct:free"
+				}
+			}
+
+			// Determine API key for the new provider
+			var apiKey string
+			switch newProvider {
+			case "groq":
+				apiKey = os.Getenv("GROQ_API_KEY")
+			case "openai":
+				apiKey = os.Getenv("OPENAI_API_KEY")
+			case "anthropic":
+				apiKey = os.Getenv("ANTHROPIC_API_KEY")
+			case "gemini":
+				apiKey = os.Getenv("GEMINI_API_KEY")
+			case "openrouter":
+				apiKey = os.Getenv("OPENROUTER_API_KEY")
+			default:
+				red.Printf("Unknown provider: %s (supported: groq, openai, anthropic, gemini, openrouter)\n", newProvider)
+				continue
+			}
+			if apiKey == "" {
+				red.Printf("No API key found for %s. Set %s_API_KEY in your environment.\n", newProvider, strings.ToUpper(newProvider))
+				continue
+			}
+
+			if err := cb.SwitchModel(newProvider, newModel, apiKey); err != nil {
+				red.Printf("Failed to switch model: %v\n", err)
+				continue
+			}
+			green.Printf("✅ Switched to %s / %s\n\n", newProvider, newModel)
+			continue
+		}
+
 		// Set streaming flag
 		streaming = true
 
-		// Show "Bot is thinking..." indicator
+		// Show "<provider> is thinking..." indicator
 		fmt.Println()
 		gray := color.New(color.FgHiBlack)
-		gray.Print("Bot is thinking")
+		gray.Printf("%s is thinking", cb.config.Provider)
 		for i := 0; i < 3; i++ {
 			time.Sleep(200 * time.Millisecond)
 			gray.Print(".")
@@ -326,7 +367,7 @@ func (cb *ChatBot) RunInteractive(ctx context.Context) error {
 
 		// Print answer with timestamp and streaming
 		botTimeStr := GetTimeString()
-		magenta.Printf("Bot (%s): ", botTimeStr)
+		magenta.Printf("%s (%s): ", cb.config.Provider, botTimeStr)
 
 		// Stream response with simple code highlighting
 		StreamResponseWithCodeHighlight(answer)
