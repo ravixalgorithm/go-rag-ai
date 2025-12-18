@@ -62,7 +62,7 @@ go-groq/
 
 ## Example Interaction
 
-![](./image.png)
+![.](./image.png)
 
 **Groq API error:**
 - Verify your `GROQ_API_KEY` in `.env`
