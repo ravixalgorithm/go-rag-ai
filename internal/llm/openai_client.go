@@ -14,7 +14,7 @@ import (
 type OpenAIClient struct {
 	apiKey string
 	model  string
-	http   *http.Client
+	client *http.Client
 }
 
 // NewOpenAIClient creates a new OpenAI LLM client.
@@ -22,7 +22,7 @@ func NewOpenAIClient(apiKey, model string) *OpenAIClient {
 	return &OpenAIClient{
 		apiKey: apiKey,
 		model:  model,
-		http: &http.Client{
+		client: &http.Client{
 			Timeout: 60 * time.Second,
 		},
 	}
@@ -68,7 +68,7 @@ func (c *OpenAIClient) Generate(ctx context.Context, messages []Message) (string
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
-	resp, err := c.http.Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("call OpenAI API: %w", err)
 	}

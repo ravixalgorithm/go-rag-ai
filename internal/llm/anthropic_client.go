@@ -14,7 +14,7 @@ import (
 type AnthropicClient struct {
 	apiKey string
 	model  string
-	http   *http.Client
+	client *http.Client
 }
 
 // NewAnthropicClient creates a new Anthropic LLM client.
@@ -22,7 +22,7 @@ func NewAnthropicClient(apiKey, model string) *AnthropicClient {
 	return &AnthropicClient{
 		apiKey: apiKey,
 		model:  model,
-		http: &http.Client{
+		client: &http.Client{
 			Timeout: 60 * time.Second,
 		},
 	}
@@ -95,7 +95,7 @@ func (c *AnthropicClient) Generate(ctx context.Context, messages []Message) (str
 	req.Header.Set("x-api-key", c.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("call Anthropic API: %w", err)
 	}
@@ -112,6 +112,9 @@ func (c *AnthropicClient) Generate(ctx context.Context, messages []Message) (str
 	var anthropicResp anthropicResponse
 	if err := json.Unmarshal(body, &anthropicResp); err != nil {
 		return "", fmt.Errorf("unmarshal response: %w", err)
+	}
+	if anthropicResp.Error != nil {
+		return "", fmt.Errorf("Anthropic API error: %s", anthropicResp.Error.Message)
 	}
 	if len(anthropicResp.Content) == 0 {
 		return "", fmt.Errorf("no content in Anthropic response")

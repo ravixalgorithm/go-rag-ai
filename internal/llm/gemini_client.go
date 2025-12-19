@@ -14,7 +14,7 @@ import (
 type GeminiClient struct {
 	apiKey string
 	model  string
-	http   *http.Client
+	client *http.Client
 }
 
 // NewGeminiClient creates a new Google Gemini LLM client.
@@ -22,7 +22,7 @@ func NewGeminiClient(apiKey, model string) *GeminiClient {
 	return &GeminiClient{
 		apiKey: apiKey,
 		model:  model,
-		http: &http.Client{
+		client: &http.Client{
 			Timeout: 60 * time.Second,
 		},
 	}
@@ -99,16 +99,17 @@ func (c *GeminiClient) Generate(ctx context.Context, messages []Message) (string
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
-		c.model, c.apiKey)
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent",
+		c.model)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(data))
 	if err != nil {
 		return "", fmt.Errorf("new request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Goog-Api-Key", c.apiKey)
 
-	resp, err := c.http.Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("call Gemini API: %w", err)
 	}

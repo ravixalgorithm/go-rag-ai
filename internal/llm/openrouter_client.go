@@ -15,7 +15,7 @@ import (
 type OpenRouterClient struct {
 	apiKey string
 	model  string
-	http   *http.Client
+	client *http.Client
 }
 
 // NewOpenRouterClient creates a new OpenRouter LLM client.
@@ -23,7 +23,7 @@ func NewOpenRouterClient(apiKey, model string) *OpenRouterClient {
 	return &OpenRouterClient{
 		apiKey: apiKey,
 		model:  model,
-		http: &http.Client{
+		client: &http.Client{
 			Timeout: 60 * time.Second,
 		},
 	}
@@ -74,7 +74,7 @@ func (c *OpenRouterClient) Generate(ctx context.Context, messages []Message) (st
 	req.Header.Set("HTTP-Referer", "https://github.com/ravixalgorithm/go-rag-ai")
 	req.Header.Set("X-Title", "Go RAG AI Chatbot")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("call OpenRouter API: %w", err)
 	}
@@ -91,6 +91,9 @@ func (c *OpenRouterClient) Generate(ctx context.Context, messages []Message) (st
 	var orResp openrouterResponse
 	if err := json.Unmarshal(body, &orResp); err != nil {
 		return "", fmt.Errorf("unmarshal response: %w", err)
+	}
+	if orResp.Error != nil {
+		return "", fmt.Errorf("OpenRouter API error: %s", orResp.Error.Message)
 	}
 	if len(orResp.Choices) == 0 {
 		return "", fmt.Errorf("no choices in OpenRouter response")

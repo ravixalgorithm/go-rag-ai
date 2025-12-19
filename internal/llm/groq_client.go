@@ -14,7 +14,7 @@ import (
 type GroqClient struct {
 	apiKey string
 	model  string
-	http   *http.Client
+	client *http.Client
 }
 
 // NewGroqClient creates a new Groq LLM client.
@@ -22,7 +22,7 @@ func NewGroqClient(apiKey, model string) *GroqClient {
 	return &GroqClient{
 		apiKey: apiKey,
 		model:  model,
-		http: &http.Client{
+		client: &http.Client{
 			Timeout: 60 * time.Second,
 		},
 	}
@@ -68,7 +68,7 @@ func (c *GroqClient) Generate(ctx context.Context, messages []Message) (string, 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
-	resp, err := c.http.Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("call Groq API: %w", err)
 	}

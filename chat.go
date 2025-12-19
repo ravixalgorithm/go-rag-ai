@@ -74,35 +74,41 @@ func (cb *ChatBot) AddToHistory(role, content, provider string) {
 
 // Query performs a RAG query with conversation context
 func (cb *ChatBot) Query(ctx context.Context, question string) (string, error) {
-	// Add user message to history
-	cb.AddToHistory("user", question)
+	// Add user message to history (user has no provider, or "user")
+	cb.AddToHistory("user", question, "user")
 
+	// 1. Snapshot state protected by RLock
+	cb.mu.RLock()
+	client := cb.llmClient
 	// Build messages for LLM including conversation history
 	messages := []llm.Message{
 		{Role: "system", Content: cb.config.SystemPrompt},
 	}
-
 	// Add conversation history (keep last 20 messages to avoid token limits)
 	historyStart := 0
 	if len(cb.conversationHistory) > 20 {
 		historyStart = len(cb.conversationHistory) - 20
 	}
-
-	for _, msg := range cb.conversationHistory[historyStart:] {
+	historySlice := cb.conversationHistory[historyStart:]
+	// Copy history while locked
+	for _, msg := range historySlice {
 		messages = append(messages, llm.Message{
 			Role:    msg.Role,
 			Content: msg.Content,
 		})
 	}
+	// Also capture provider for the response later
+	currentProvider := cb.config.Provider
+	cb.mu.RUnlock()
 
-	// Call LLM via the pluggable client
-	answer, err := cb.llmClient.Generate(ctx, messages)
+	// 2. Call LLM (long running operation) - no lock held
+	answer, err := client.Generate(ctx, messages)
 	if err != nil {
 		return "", err
 	}
 
-	// Add assistant response to history
-	cb.AddToHistory("assistant", answer)
+	// 3. Add assistant response to history
+	cb.AddToHistory("assistant", answer, currentProvider)
 
 	return answer, nil
 }
@@ -318,7 +324,7 @@ func (cb *ChatBot) RunInteractive(ctx context.Context) error {
 					fmt.Println(msg.Content)
 				} else {
 					fmt.Print("    ")
-					magenta.Printf("%s (%s): ", cb.config.Provider, msg.Timestamp.Format("15:04:05"))
+					magenta.Printf("%s (%s): ", msg.Provider, msg.Timestamp.Format("15:04:05"))
 					fmt.Println(msg.Content)
 					fmt.Println()
 				}
@@ -370,24 +376,14 @@ func (cb *ChatBot) RunInteractive(ctx context.Context) error {
 			}
 
 			// Determine API key for the new provider
-			var apiKey string
-			switch newProvider {
-			case "groq":
-				apiKey = os.Getenv("GROQ_API_KEY")
-			case "openai":
-				apiKey = os.Getenv("OPENAI_API_KEY")
-			case "anthropic":
-				apiKey = os.Getenv("ANTHROPIC_API_KEY")
-			case "gemini":
-				apiKey = os.Getenv("GEMINI_API_KEY")
-			case "openrouter":
-				apiKey = os.Getenv("OPENROUTER_API_KEY")
-			default:
-				red.Printf("Unknown provider: %s (supported: groq, openai, anthropic, gemini, openrouter)\n", newProvider)
-				continue
-			}
-			if apiKey == "" {
-				red.Printf("No API key found for %s. Set %s_API_KEY in your environment.\n", newProvider, strings.ToUpper(newProvider))
+			apiKey, err := GetAPIKey(newProvider)
+			if err != nil {
+				// Handle specific error cases if needed, otherwise print error
+				if strings.Contains(err.Error(), "unsupported") {
+					red.Printf("Unknown provider: %s (supported: groq, openai, anthropic, gemini, openrouter)\n", newProvider)
+				} else {
+					red.Printf("Error getting API key: %v\n", err)
+				}
 				continue
 			}
 
