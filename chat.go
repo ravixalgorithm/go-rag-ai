@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"time"
 
 	"go-groq/internal/llm"
@@ -19,6 +20,7 @@ type ConversationMessage struct {
 	Role      string
 	Content   string
 	Timestamp time.Time
+	Provider  string
 }
 
 // ChatBot handles RAG-based chat interactions with conversation memory
@@ -26,6 +28,7 @@ type ChatBot struct {
 	config              *Config
 	conversationHistory []ConversationMessage
 	llmClient           llm.LLMClient
+	mu                  sync.RWMutex
 }
 
 // NewChatBot creates a new ChatBot instance
@@ -44,6 +47,9 @@ func NewChatBot(config *Config) *ChatBot {
 // SwitchModel switches to a different provider and/or model at runtime.
 // provider can be "groq" or "openai"; model is the model name (e.g. "gpt-4o").
 func (cb *ChatBot) SwitchModel(provider, model, apiKey string) error {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
 	client, err := llm.NewClient(provider, apiKey, model)
 	if err != nil {
 		return err
@@ -55,11 +61,14 @@ func (cb *ChatBot) SwitchModel(provider, model, apiKey string) error {
 }
 
 // AddToHistory adds a message to the conversation history
-func (cb *ChatBot) AddToHistory(role, content string) {
+func (cb *ChatBot) AddToHistory(role, content, provider string) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 	cb.conversationHistory = append(cb.conversationHistory, ConversationMessage{
 		Role:      role,
 		Content:   content,
 		Timestamp: time.Now(),
+		Provider:  provider,
 	})
 }
 
@@ -313,7 +322,7 @@ func (cb *ChatBot) RunInteractive(ctx context.Context) error {
 					fmt.Println(msg.Content)
 					fmt.Println()
 				}
-				
+
 			}
 			cyan.Println("  ═══════════════════════════════════════════════════════════")
 			fmt.Println()

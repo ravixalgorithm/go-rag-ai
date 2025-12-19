@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -13,6 +15,30 @@ type Config struct {
 	APIKey       string // API key for the selected provider
 	ChatModel    string
 	SystemPrompt string
+}
+
+// GetAPIKey returns the API key for the specified provider
+func GetAPIKey(provider string) (string, error) {
+	var apiKey string
+	switch provider {
+	case "groq":
+		apiKey = os.Getenv("GROQ_API_KEY")
+	case "openai":
+		apiKey = os.Getenv("OPENAI_API_KEY")
+	case "anthropic":
+		apiKey = os.Getenv("ANTHROPIC_API_KEY")
+	case "gemini":
+		apiKey = os.Getenv("GEMINI_API_KEY")
+	case "openrouter":
+		apiKey = os.Getenv("OPENROUTER_API_KEY")
+	default:
+		return "", fmt.Errorf("unsupported LLM provider: %s (supported: groq, openai, anthropic, gemini, openrouter)", provider)
+	}
+
+	if apiKey == "" {
+		return "", fmt.Errorf("no API key found for %s. Set %s_API_KEY in your environment", provider, os.Getenv(strings.ToUpper(provider)+"_API_KEY")) // Simple heuristic, improved error message below
+	}
+	return apiKey, nil
 }
 
 // LoadConfig loads configuration from environment variables
@@ -27,35 +53,10 @@ func LoadConfig() (*Config, error) {
 	}
 
 	// Load the appropriate API key
-	var apiKey string
-	switch provider {
-	case "groq":
-		apiKey = os.Getenv("GROQ_API_KEY")
-		if apiKey == "" {
-			log.Fatal("GROQ_API_KEY environment variable is required when using groq provider")
-		}
-	case "openai":
-		apiKey = os.Getenv("OPENAI_API_KEY")
-		if apiKey == "" {
-			log.Fatal("OPENAI_API_KEY environment variable is required when using openai provider")
-		}
-	case "anthropic":
-		apiKey = os.Getenv("ANTHROPIC_API_KEY")
-		if apiKey == "" {
-			log.Fatal("ANTHROPIC_API_KEY environment variable is required when using anthropic provider")
-		}
-	case "gemini":
-		apiKey = os.Getenv("GEMINI_API_KEY")
-		if apiKey == "" {
-			log.Fatal("GEMINI_API_KEY environment variable is required when using gemini provider")
-		}
-	case "openrouter":
-		apiKey = os.Getenv("OPENROUTER_API_KEY")
-		if apiKey == "" {
-			log.Fatal("OPENROUTER_API_KEY environment variable is required when using openrouter provider")
-		}
-	default:
-		log.Fatalf("Unsupported LLM_PROVIDER: %s (supported: groq, openai, anthropic, gemini, openrouter)", provider)
+	apiKey, err := GetAPIKey(provider)
+	if err != nil {
+		// For the initial load, we want to fail hard if the key is missing or provider is invalid
+		log.Fatalf("Config error: %v", err)
 	}
 
 	// Determine default model per provider
