@@ -45,7 +45,7 @@ func NewChatBot(config *Config) *ChatBot {
 }
 
 // SwitchModel switches to a different provider and/or model at runtime.
-// provider can be "groq" or "openai"; model is the model name (e.g. "gpt-4o").
+// provider can be "groq", "openai", "anthropic", "gemini", or "openrouter"; model is the model name (e.g. "gpt-4o"), and apiKey is the API key for the selected provider.
 func (cb *ChatBot) SwitchModel(provider, model, apiKey string) error {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
